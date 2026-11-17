@@ -1,0 +1,334 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital,wght@0,400;1,400&family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Custom scrollbar to match the high-end premium vibe */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #000000;
+}
+::-webkit-scrollbar-thumb {
+  background: #1f2937;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}
+
+body {
+  background-color: #000000;
+  color: #ffffff;
+  overflow-x: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+/* Premium CSS-only Horizontal Pill Navigation Menu */
+.premium-header-nav {
+  position: absolute;
+  top: clamp(24px, 3vw, 48px);
+  right: clamp(24px, 3vw, 48px);
+  z-index: 50;
+  pointer-events: auto;
+}
+
+@media (max-width: 768px) {
+  .premium-header-nav {
+    top: 24px;
+    right: 24px;
+  }
+}
+
+.premium-nav-list {
+  display: flex;
+  gap: 0px; /* Reduced gap to exactly 0px */
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  align-items: center;
+}
+
+.premium-nav-item {
+  margin: 0;
+  padding: 0;
+}
+
+.premium-nav-link {
+  display: block;
+  background-color: #FFFFFF;
+  color: #111111;
+  font-family: "Manrope", sans-serif; /* Switched font-family to Manrope */
+  font-size: clamp(12px, 0.9vw, 15px); /* Dynamically scaled desktop font size */
+  font-weight: 500;
+  text-decoration: none;
+  text-transform: none; /* Sentence case format */
+  padding: clamp(8px, 0.7vw, 12px) clamp(16px, 1.3vw, 24px); /* Fluid padding */
+  border-radius: 8px; /* Sharped corners with 8px rounding */
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  white-space: nowrap;
+}
+
+.premium-nav-link:hover {
+  opacity: 0.9;
+  transform: scale(1.03); /* Subtle micro-interaction lift */
+}
+
+.premium-nav-link:active {
+  transform: scale(0.97);
+}
+
+/* Fluid Scalable Brand Logo alignment header */
+.premium-brand-header {
+  position: absolute;
+  top: clamp(24px, 3vw, 48px);
+  left: clamp(24px, 3vw, 48px);
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 0.8vw, 14px);
+  user-select: none;
+  pointer-events: auto;
+}
+
+@media (max-width: 768px) {
+  .premium-brand-header {
+    top: 24px;
+    left: 24px;
+  }
+}
+
+.premium-brand-text {
+  font-family: "Instrument Serif", serif;
+  font-size: clamp(22px, 2.2vw, 32px); /* Scaling brand logo name */
+  font-weight: 500;
+  color: #FFFFFF;
+  letter-spacing: -0.03em;
+}
+
+.premium-brand-logo-svg {
+  width: clamp(28px, 2.6vw, 44px); /* Scaling SVG dynamically */
+  height: auto;
+  opacity: 0.95;
+}
+
+/* Glassmorphic premium card content (bottom-left) layout */
+.premium-botanical-card {
+  position: absolute;
+  bottom: clamp(24px, 3vw, 48px);
+  left: clamp(24px, 3vw, 48px);
+  width: clamp(380px, 30vw, 540px); /* Dynamically scales width */
+  max-width: 90vw;
+  background-color: rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(80px);
+  -webkit-backdrop-filter: blur(80px); /* Safari support */
+  border-radius: 0px; /* Removed corner rounding */
+  padding: clamp(32px, 3.2vw, 56px); /* Fluid padding inside */
+  z-index: 45;
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.15); /* Soft premium frame */
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.3);
+}
+
+@media (max-width: 768px) {
+  .premium-botanical-card {
+    bottom: 32px;
+    left: 24px;
+    padding: 32px 24px;
+    width: calc(100vw - 48px);
+  }
+}
+
+.premium-card-title {
+  font-family: "Instrument Serif", serif;
+  font-size: 72px;
+  line-height: 1.05;
+  font-weight: 400;
+  color: #FFFFFF;
+  margin: 0 0 clamp(10px, 1.2vw, 20px) 0; /* Scaling margin distance between header and sub-text */
+  letter-spacing: -0.01em;
+  width: 324px;
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .premium-card-title {
+    font-size: 38px;
+    margin-bottom: 10px; /* Adjusted spacing for mobile */
+  }
+}
+
+.premium-card-subtext {
+  font-family: "Manrope", sans-serif;
+  font-size: clamp(12px, 1vw, 15px); /* Scaling text size */
+  line-height: 1.6;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.64); /* Requested 64% white transparency */
+  letter-spacing: 0.01em;
+  margin: 0;
+  width: clamp(260px, 22vw, 380px); /* Fluidly scaled paragraph width as well */
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .premium-card-subtext {
+    font-size: 13px;
+  }
+}
+
+/* Floating Action Circle Button overlapping on the right side */
+.premium-action-circle {
+  position: absolute;
+  right: calc(-1 * (clamp(80px, 7vw, 112px) / 2)); /* Always center overlaps right on edge */
+  bottom: clamp(20px, 2.5vw, 40px);
+  width: clamp(80px, 7vw, 112px); /* Scales cleanly dynamically on desktop windows */
+  height: clamp(80px, 7vw, 112px);
+  border-radius: 50%;
+  background-color: #002AFF; /* Requested button color */
+  color: #FFFFFF;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
+  z-index: 55;
+  box-shadow: none; /* Removed the blue glowing effect */
+}
+
+.premium-action-circle:hover {
+  transform: scale(1.08); /* Sophisticated responsive scale effect */
+  background-color: #1e4dff; /* Elegant slight light shift */
+}
+
+.premium-action-circle:active {
+  transform: scale(0.94);
+}
+
+.premium-action-circle svg {
+  width: clamp(30px, 2.8vw, 44px); /* Scalable SVG arrow with long tail */
+  height: clamp(18px, 1.8vw, 28px);
+  stroke: #FFFFFF;
+  stroke-width: 1.75;
+  fill: none;
+  transition: transform 0.25s ease;
+}
+
+.premium-action-circle:hover svg {
+  transform: translateX(4px); /* Subtle premium arrow sliding effect */
+}
+
+@media (max-width: 768px) {
+  .premium-action-circle {
+    width: 64px;
+    height: 64px;
+    right: -16px;
+    bottom: -32px; /* Hang below contextually on smaller viewports */
+  }
+  .premium-action-circle svg {
+    width: 38px; /* Increased by 16px from 22px to accommodate longer arrow tail */
+    height: 22px;
+  }
+}
+
+/* Staggered Vertical Feature Cards layout container appearing at the end of the scroll */
+.premium-features-container {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: 95%;
+  display: none; /* Controlled dynamically by requestAnimationFrame based on scroll progress */
+  grid-template-columns: repeat(3, 280px);
+  justify-content: center;
+  gap: 16px;
+  z-index: 46;
+  pointer-events: none;
+  align-items: stretch;
+}
+
+.premium-feature-card {
+  background-color: rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(80px);
+  -webkit-backdrop-filter: blur(80px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 0px; /* Rectangular form exactly requested */
+  padding: 24px; /* Exact 24px padding on all sides as requested */
+  width: 280px; /* Exact 280px width */
+  height: 440px; /* Exact 440px height */
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-start;
+  transition: border-color 0.3s ease, transform 0.2s ease;
+}
+
+.premium-feature-card:hover {
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.premium-feature-icon-wrapper {
+  margin-bottom: 32px; /* Replaced default margin with auto margins on title to push text down */
+  color: #002AFF; /* Requested brand deep electric blue context color */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.premium-feature-icon-wrapper svg {
+  width: clamp(36px, 3.5vw, 48px);
+  height: clamp(36px, 3.5vw, 48px);
+  opacity: 0.95;
+}
+
+.premium-feature-title {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 24px; /* Set to exactly 24px as targeted */
+  font-weight: 400;
+  line-height: 1.15;
+  color: #FFFFFF;
+  margin: auto 0 8px 0; /* margin-bottom reduced to exactly 8px between title and description */
+  letter-spacing: -0.01em;
+}
+
+.premium-feature-desc {
+  font-family: "Manrope", sans-serif; /* Same font-family as description */
+  font-size: clamp(12px, 1vw, 14px);
+  line-height: 20px; /* Set to exactly 20px as targeted */
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.64); /* Predefined 64% white transparency */
+  margin: 0;
+  letter-spacing: 0.015em;
+}
+
+@media (max-width: 768px) {
+  .premium-features-container {
+    grid-template-columns: 1fr;
+    width: calc(100% - 48px);
+    left: 24px;
+    transform: translate(0, -50%);
+    top: 50%;
+    gap: 16px;
+    height: auto;
+    overflow-y: auto;
+    max-height: 80vh;
+  }
+  .premium-feature-card {
+    padding: 24px;
+    width: 100%;
+    height: auto;
+    min-height: 240px;
+  }
+  .premium-feature-icon-wrapper {
+    margin-bottom: 24px;
+  }
+}
+

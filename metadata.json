@@ -1,0 +1,6 @@
+{
+  "name": "Scroll Video Player",
+  "description": "A smooth scroll-driven video landing screen built with GSAP ScrollTrigger and requestAnimationFrame frame-lock optimization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
