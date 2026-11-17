@@ -40,9 +40,13 @@ export default function App() {
   const id2 = "1XJM_3dhveM9L0j9uM5jnimHlyhxD0Kbh";
   const id3 = "1NeM-lxKHfX0daY5BrgZfgZ9yW1W-SPE5";
 
-  const [videoSrc1, setVideoSrc1] = useState<string>(`/api/video?id=${id1}`);
-  const [videoSrc2, setVideoSrc2] = useState<string>(`/api/video?id=${id2}`);
-  const [videoSrc3, setVideoSrc3] = useState<string>(`/api/video?id=${id3}`);
+  const fallback1 = 'https://assets.mixkit.co/videos/preview/mixkit-abstract-laser-lights-background-3112-large.mp4';
+  const fallback2 = 'https://assets.mixkit.co/videos/preview/mixkit-stars-in-space-background-1611-large.mp4';
+  const fallback3 = 'https://assets.mixkit.co/videos/preview/mixkit-underwater-light-beams-background-3113-large.mp4';
+
+  const [videoSrc1, setVideoSrc1] = useState<string>('');
+  const [videoSrc2, setVideoSrc2] = useState<string>('');
+  const [videoSrc3, setVideoSrc3] = useState<string>('');
 
   // Derived loading progress average
   const loadingProgress = Math.round((loadingProgress1 + loadingProgress2 + loadingProgress3) / 3);
@@ -50,9 +54,40 @@ export default function App() {
   // Animation values
   const targetProgressRef = useRef<number>(0);
   const currentProgressRef = useRef<number>(0);
-  const lastTimeRef = useRef<string>('');
+  const lastDomProgressRef = useRef<number>(-1);
+  const isCanvasTaintedRef = useRef<boolean>(false);
+  const durationsRef = useRef<[number, number, number]>([0, 0, 0]);
+  const lastDrawnVideoIndexRef = useRef<number>(-1);
 
-  // HTML Element Refs for Scroll-based Blur / Motion Face out
+  // Frame-lock gate: ensures we only draw a frame after the video finishes loading/decoding it,
+  // and never queue overlapping seeks that cause scroll lag.
+  const seekGateRef = useRef<{
+    isLocked: boolean;
+    lockedIndex: number;
+    targetIndex: number;
+    targetTime: number;
+    lastRequestedIndex: number;
+    lastRequestedTime: number;
+    watchdogId: number | null;
+  }>({
+    isLocked: false,
+    lockedIndex: -1,
+    targetIndex: 0,
+    targetTime: 0,
+    lastRequestedIndex: -1,
+    lastRequestedTime: -1,
+    watchdogId: null,
+  });
+
+  useEffect(() => {
+    isCanvasTaintedRef.current = isCanvasTainted;
+  }, [isCanvasTainted]);
+
+  useEffect(() => {
+    durationsRef.current = [video1Duration, video2Duration, video3Duration];
+  }, [video1Duration, video2Duration, video3Duration]);
+
+  // HTML Element Refs for Scroll-based Blur / Motion Fade out
   const brandHeaderRef = useRef<HTMLDivElement>(null);
   const navHeaderRef = useRef<HTMLElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -74,61 +109,27 @@ export default function App() {
     }
   };
 
-  // Resize handler for full screen canvas
-  const handleResize = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const p = currentProgressRef.current;
-    const video = p <= 0.333
-      ? videoRef1.current
-      : p <= 0.666
-        ? videoRef2.current
-        : videoRef3.current;
-    if (!video) return;
-
-    const parent = canvas.parentElement;
-    if (!parent) return;
-
-    const pWidth = parent.clientWidth;
-    const pHeight = parent.clientHeight;
-    const dpr = window.devicePixelRatio || 1;
-
-    canvas.width = pWidth * dpr;
-    canvas.height = pHeight * dpr;
-    canvas.style.width = `${pWidth}px`;
-    canvas.style.height = `${pHeight}px`;
-
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-       ctx.scale(dpr, dpr);
-    }
-    
-    // Draw immediate frame after resize
-    drawFrame();
+  const getVideoByIndex = (idx: number): HTMLVideoElement | null => {
+    if (idx === 0) return videoRef1.current;
+    if (idx === 1) return videoRef2.current;
+    return videoRef3.current;
   };
 
-  // Cover image style rendering on Canvas
-  const drawFrame = () => {
+  // Cover image style rendering on Canvas for a specific loaded/decoded video
+  const drawVideoToCanvas = (video: HTMLVideoElement | null) => {
     const canvas = canvasRef.current;
-    if (!canvas || isCanvasTainted) return;
+    if (!canvas || isCanvasTaintedRef.current) return;
+    if (!video || video.readyState < 2 || video.videoWidth === 0) return;
 
-    const p = currentProgressRef.current;
-    const video = p <= 0.333
-      ? videoRef1.current
-      : p <= 0.666
-        ? videoRef2.current
-        : videoRef3.current;
-    if (!video || video.readyState < 2) return;
-
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
     const vWidth = video.videoWidth || 1920;
     const vHeight = video.videoHeight || 1080;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const cWidth = canvas.width / dpr;
     const cHeight = canvas.height / dpr;
+    if (cWidth <= 0 || cHeight <= 0) return;
 
     const vAspect = vWidth / vHeight;
     const cAspect = cWidth / cHeight;
@@ -147,245 +148,320 @@ export default function App() {
     }
 
     try {
-      ctx.clearRect(0, 0, cWidth, cHeight);
+      // Overwrite directly without clearRect so previous frame stays visible with zero flicker
       ctx.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
     } catch (error) {
-      // If CORS taints the canvas, fallback immediately to direct video display
       console.warn('Canvas got CORS tainted. Falling back to native video DOM placement.', error);
+      isCanvasTaintedRef.current = true;
       setIsCanvasTainted(true);
     }
   };
 
-  // Video 1 Load Monitoring
-  useEffect(() => {
-    const video = videoRef1.current;
-    if (!video) return;
+  // Resize handler for full screen canvas
+  const handleResize = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    let progressInterval: NodeJS.Timeout;
+    const parent = canvas.parentElement;
+    if (!parent) return;
 
-    const onProgress = () => {
-      if (video.buffered.length > 0) {
-        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        const duration = video.duration || 1;
-        const percent = Math.min((bufferedEnd / duration) * 100, 100);
-        setLoadingProgress1(Math.round(percent));
+    const pWidth = parent.clientWidth;
+    const pHeight = parent.clientHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    canvas.width = Math.max(1, Math.floor(pWidth * dpr));
+    canvas.height = Math.max(1, Math.floor(pHeight * dpr));
+    canvas.style.width = `${pWidth}px`;
+    canvas.style.height = `${pHeight}px`;
+
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (ctx) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    const activeVideo = getVideoByIndex(seekGateRef.current.targetIndex);
+    drawVideoToCanvas(activeVideo);
+  };
+
+  // Trigger a frame seek only if no other seek is currently decoding
+  const requestNextFrameIfIdle = () => {
+    const gate = seekGateRef.current;
+    if (gate.isLocked) return;
+
+    const idx = gate.targetIndex;
+    const targetTime = gate.targetTime;
+    const video = getVideoByIndex(idx);
+    if (!video || video.readyState < 1) return;
+
+    const needsVideoSwitch = lastDrawnVideoIndexRef.current !== idx;
+    const timeDiff = Math.abs(video.currentTime - targetTime);
+
+    // If video is already at the desired timestamp (e.g. just switched to start of video 2)
+    if (timeDiff <= 0.012 && !video.seeking) {
+      if (needsVideoSwitch && video.readyState >= 2) {
+        drawVideoToCanvas(video);
+        lastDrawnVideoIndexRef.current = idx;
+        gate.lastRequestedIndex = idx;
+        gate.lastRequestedTime = targetTime;
       }
-      
-      const dur = video.duration;
-      if (dur && !isNaN(dur) && dur > 0 && dur !== Infinity && !isMeta1Loaded) {
-        setVideo1Duration(dur);
-        setIsMeta1Loaded(true);
+      return;
+    }
+
+    // Avoid redundant seek to the exact same timestamp already requested
+    if (!needsVideoSwitch && gate.lastRequestedIndex === idx && Math.abs(gate.lastRequestedTime - targetTime) <= 0.012) {
+      return;
+    }
+
+    gate.isLocked = true;
+    gate.lockedIndex = idx;
+    gate.lastRequestedIndex = idx;
+    gate.lastRequestedTime = targetTime;
+
+    if (gate.watchdogId !== null) {
+      window.clearTimeout(gate.watchdogId);
+    }
+    // Watchdog ensures a dropped seeked event can never permanently freeze scrubbing
+    gate.watchdogId = window.setTimeout(() => {
+      if (gate.isLocked && gate.lockedIndex === idx) {
+        gate.isLocked = false;
+        gate.lockedIndex = -1;
+        gate.watchdogId = null;
+        if (video.readyState >= 2 && !video.seeking) {
+          drawVideoToCanvas(video);
+          lastDrawnVideoIndexRef.current = idx;
+        }
+        requestNextFrameIfIdle();
+      }
+    }, 1000);
+
+    video.currentTime = targetTime;
+  };
+
+  // Preload all 3 videos into local Blob URLs in RAM so seeking never stalls on network range requests
+  useEffect(() => {
+    const abortController = new AbortController();
+    const createdBlobUrls: string[] = [];
+
+    const fetchAsBlobUrl = async (
+      url: string,
+      onProgress: (pct: number) => void
+    ): Promise<string> => {
+      const response = await fetch(url, { signal: abortController.signal });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} loading ${url}`);
+      }
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error('Received HTML instead of video stream');
+      }
+
+      const contentLengthHeader = response.headers.get('content-length');
+      const totalBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0;
+
+      if (!response.body) {
+        const blob = await response.blob();
+        onProgress(95);
+        const blobUrl = URL.createObjectURL(blob);
+        createdBlobUrls.push(blobUrl);
+        return blobUrl;
+      }
+
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let receivedBytes = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          receivedBytes += value.byteLength;
+          if (totalBytes > 0) {
+            onProgress(Math.min(95, Math.round((receivedBytes / totalBytes) * 95)));
+          } else {
+            // Smooth estimate up to 90% when content-length is unavailable
+            onProgress(Math.min(90, Math.round((receivedBytes / (receivedBytes + 2_000_000)) * 90)));
+          }
+        }
+      }
+
+      const blob = new Blob(chunks as BlobPart[], { type: contentType || 'video/mp4' });
+      const blobUrl = URL.createObjectURL(blob);
+      createdBlobUrls.push(blobUrl);
+      onProgress(97);
+      return blobUrl;
+    };
+
+    const loadVideoSource = async (
+      primaryUrl: string,
+      fallbackUrl: string,
+      setProgress: React.Dispatch<React.SetStateAction<number>>,
+      setSrc: React.Dispatch<React.SetStateAction<string>>
+    ) => {
+      try {
+        const blobUrl = await fetchAsBlobUrl(primaryUrl, setProgress);
+        if (!abortController.signal.aborted) {
+          setSrc(blobUrl);
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || abortController.signal.aborted) return;
+        console.warn(`Primary video preload failed (${primaryUrl}), trying fallback:`, err);
+        try {
+          const fallbackBlobUrl = await fetchAsBlobUrl(fallbackUrl, setProgress);
+          if (!abortController.signal.aborted) {
+            setSrc(fallbackBlobUrl);
+          }
+        } catch (fallbackErr: any) {
+          if (fallbackErr?.name === 'AbortError' || abortController.signal.aborted) return;
+          console.warn('Fallback Blob fetch failed, assigning direct fallback URL:', fallbackErr);
+          setProgress(50);
+          setSrc(fallbackUrl);
+        }
       }
     };
 
-    const onLoadedMetadata = () => {
+    loadVideoSource(`/api/video?id=${id1}`, fallback1, setLoadingProgress1, setVideoSrc1);
+    loadVideoSource(`/api/video?id=${id2}`, fallback2, setLoadingProgress2, setVideoSrc2);
+    loadVideoSource(`/api/video?id=${id3}`, fallback3, setLoadingProgress3, setVideoSrc3);
+
+    return () => {
+      abortController.abort();
+      createdBlobUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
+
+  // Attach decode & seek-completion handlers for a given video index
+  const attachVideoListeners = (
+    idx: number,
+    video: HTMLVideoElement | null,
+    src: string,
+    setDuration: React.Dispatch<React.SetStateAction<number>>,
+    setMetaLoaded: React.Dispatch<React.SetStateAction<boolean>>,
+    setProgress: React.Dispatch<React.SetStateAction<number>>,
+    fallbackUrl: string,
+    setSrc: React.Dispatch<React.SetStateAction<string>>
+  ) => {
+    if (!video || !src) return () => {};
+
+    let metaDone = false;
+
+    const markReady = () => {
       const dur = video.duration;
-      if (dur && !isNaN(dur) && dur > 0 && dur !== Infinity) {
-        setVideo1Duration(dur);
-        setIsMeta1Loaded(true);
-      } else if (dur === Infinity || isNaN(dur)) {
-        // Safe default fallback in case metadata is streaming
-        setVideo1Duration(5);
-        setIsMeta1Loaded(true);
+      const validDur = dur && !isNaN(dur) && dur > 0 && dur !== Infinity ? dur : 5;
+      if (!metaDone && video.readyState >= 2) {
+        metaDone = true;
+        setDuration(validDur);
+        setMetaLoaded(true);
+        setProgress(100);
+        if (idx === 0 && lastDrawnVideoIndexRef.current === -1) {
+          drawVideoToCanvas(video);
+          lastDrawnVideoIndexRef.current = 0;
+        }
+      }
+    };
+
+    const completeSeekAndDraw = () => {
+      if (video.readyState < 2 || video.seeking) return;
+
+      const gate = seekGateRef.current;
+
+      // Only draw onto canvas after this video frame has fully loaded/decoded
+      if (gate.lockedIndex === idx || gate.targetIndex === idx) {
+        drawVideoToCanvas(video);
+        lastDrawnVideoIndexRef.current = idx;
+      }
+
+      if (gate.lockedIndex === idx) {
+        if (gate.watchdogId !== null) {
+          window.clearTimeout(gate.watchdogId);
+          gate.watchdogId = null;
+        }
+        gate.isLocked = false;
+        gate.lockedIndex = -1;
+
+        // Immediately advance to the latest scroll target if scroll moved while decoding
+        requestNextFrameIfIdle();
       }
     };
 
     const onSeeked = () => {
-      if (!isCanvasTainted && currentProgressRef.current <= 0.333) {
-        drawFrame();
+      if (video.readyState >= 2) {
+        completeSeekAndDraw();
+      } else {
+        // Wait until the frame data for the seeked position is actually loaded
+        const onFrameLoaded = () => {
+          video.removeEventListener('loadeddata', onFrameLoaded);
+          video.removeEventListener('canplay', onFrameLoaded);
+          completeSeekAndDraw();
+        };
+        video.addEventListener('loadeddata', onFrameLoaded);
+        video.addEventListener('canplay', onFrameLoaded);
       }
     };
 
-    const onError = (e: any) => {
-      console.error('Error loading video 1, using fallback:', e);
-      const fallbackUrl = 'https://assets.mixkit.co/videos/preview/mixkit-abstract-laser-lights-background-3112-large.mp4';
-      if (videoSrc1 !== fallbackUrl) {
-        setVideoSrc1(fallbackUrl);
-        setLoadingProgress1(0);
+    const onError = () => {
+      if (src !== fallbackUrl) {
+        setSrc(fallbackUrl);
       } else {
         setHasError(true);
       }
     };
 
-    video.addEventListener('progress', onProgress);
-    video.addEventListener('loadedmetadata', onLoadedMetadata);
-    video.addEventListener('durationchange', onLoadedMetadata);
-    video.addEventListener('canplay', onLoadedMetadata);
+    video.addEventListener('loadeddata', markReady);
+    video.addEventListener('canplay', markReady);
     video.addEventListener('seeked', onSeeked);
     video.addEventListener('error', onError);
 
-    // Initial check in case resource was already cached/loaded
-    if (video.readyState >= 1) {
-      onLoadedMetadata();
-      onProgress();
+    if (video.readyState >= 2) {
+      markReady();
     }
 
-    progressInterval = setInterval(onProgress, 300);
-
     return () => {
-      video.removeEventListener('progress', onProgress);
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
-      video.removeEventListener('durationchange', onLoadedMetadata);
-      video.removeEventListener('canplay', onLoadedMetadata);
+      video.removeEventListener('loadeddata', markReady);
+      video.removeEventListener('canplay', markReady);
       video.removeEventListener('seeked', onSeeked);
       video.removeEventListener('error', onError);
-      clearInterval(progressInterval);
     };
-  }, [videoSrc1, isMeta1Loaded]);
+  };
 
-  // Video 2 Load Monitoring
   useEffect(() => {
-    const video = videoRef2.current;
-    if (!video) return;
+    return attachVideoListeners(
+      0,
+      videoRef1.current,
+      videoSrc1,
+      setVideo1Duration,
+      setIsMeta1Loaded,
+      setLoadingProgress1,
+      fallback1,
+      setVideoSrc1
+    );
+  }, [videoSrc1]);
 
-    let progressInterval: NodeJS.Timeout;
-
-    const onProgress = () => {
-      if (video.buffered.length > 0) {
-        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        const duration = video.duration || 1;
-        const percent = Math.min((bufferedEnd / duration) * 100, 100);
-        setLoadingProgress2(Math.round(percent));
-      }
-
-      const dur = video.duration;
-      if (dur && !isNaN(dur) && dur > 0 && dur !== Infinity && !isMeta2Loaded) {
-        setVideo2Duration(dur);
-        setIsMeta2Loaded(true);
-      }
-    };
-
-    const onLoadedMetadata = () => {
-      const dur = video.duration;
-      if (dur && !isNaN(dur) && dur > 0 && dur !== Infinity) {
-        setVideo2Duration(dur);
-        setIsMeta2Loaded(true);
-      } else if (dur === Infinity || isNaN(dur)) {
-        // Safe default fallback in case metadata is streaming
-        setVideo2Duration(5);
-        setIsMeta2Loaded(true);
-      }
-    };
-
-    const onSeeked = () => {
-      if (!isCanvasTainted && currentProgressRef.current > 0.333 && currentProgressRef.current <= 0.666) {
-        drawFrame();
-      }
-    };
-
-    const onError = (e: any) => {
-      console.error('Error loading video 2, using fallback:', e);
-      const fallbackUrl = 'https://assets.mixkit.co/videos/preview/mixkit-stars-in-space-background-1611-large.mp4';
-      if (videoSrc2 !== fallbackUrl) {
-        setVideoSrc2(fallbackUrl);
-        setLoadingProgress2(0);
-      } else {
-        setHasError(true);
-      }
-    };
-
-    video.addEventListener('progress', onProgress);
-    video.addEventListener('loadedmetadata', onLoadedMetadata);
-    video.addEventListener('durationchange', onLoadedMetadata);
-    video.addEventListener('canplay', onLoadedMetadata);
-    video.addEventListener('seeked', onSeeked);
-    video.addEventListener('error', onError);
-
-    // Initial check in case resource was already cached/loaded
-    if (video.readyState >= 1) {
-      onLoadedMetadata();
-      onProgress();
-    }
-
-    progressInterval = setInterval(onProgress, 300);
-
-    return () => {
-      video.removeEventListener('progress', onProgress);
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
-      video.removeEventListener('durationchange', onLoadedMetadata);
-      video.removeEventListener('canplay', onLoadedMetadata);
-      video.removeEventListener('seeked', onSeeked);
-      video.removeEventListener('error', onError);
-      clearInterval(progressInterval);
-    };
-  }, [videoSrc2, isMeta2Loaded]);
-
-  // Video 3 Load Monitoring
   useEffect(() => {
-    const video = videoRef3.current;
-    if (!video) return;
+    return attachVideoListeners(
+      1,
+      videoRef2.current,
+      videoSrc2,
+      setVideo2Duration,
+      setIsMeta2Loaded,
+      setLoadingProgress2,
+      fallback2,
+      setVideoSrc2
+    );
+  }, [videoSrc2]);
 
-    let progressInterval: NodeJS.Timeout;
-
-    const onProgress = () => {
-      if (video.buffered.length > 0) {
-        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        const duration = video.duration || 1;
-        const percent = Math.min((bufferedEnd / duration) * 100, 100);
-        setLoadingProgress3(Math.round(percent));
-      }
-
-      const dur = video.duration;
-      if (dur && !isNaN(dur) && dur > 0 && dur !== Infinity && !isMeta3Loaded) {
-        setVideo3Duration(dur);
-        setIsMeta3Loaded(true);
-      }
-    };
-
-    const onLoadedMetadata = () => {
-      const dur = video.duration;
-      if (dur && !isNaN(dur) && dur > 0 && dur !== Infinity) {
-        setVideo3Duration(dur);
-        setIsMeta3Loaded(true);
-      } else if (dur === Infinity || isNaN(dur)) {
-        // Safe default fallback in case metadata is streaming
-        setVideo3Duration(5);
-        setIsMeta3Loaded(true);
-      }
-    };
-
-    const onSeeked = () => {
-      if (!isCanvasTainted && currentProgressRef.current > 0.666) {
-        drawFrame();
-      }
-    };
-
-    const onError = (e: any) => {
-      console.error('Error loading video 3, using fallback:', e);
-      const fallbackUrl = 'https://assets.mixkit.co/videos/preview/mixkit-underwater-light-beams-background-3113-large.mp4';
-      if (videoSrc3 !== fallbackUrl) {
-        setVideoSrc3(fallbackUrl);
-        setLoadingProgress3(0);
-      } else {
-        setHasError(true);
-      }
-    };
-
-    video.addEventListener('progress', onProgress);
-    video.addEventListener('loadedmetadata', onLoadedMetadata);
-    video.addEventListener('durationchange', onLoadedMetadata);
-    video.addEventListener('canplay', onLoadedMetadata);
-    video.addEventListener('seeked', onSeeked);
-    video.addEventListener('error', onError);
-
-    // Initial check in case resource was already cached/loaded
-    if (video.readyState >= 1) {
-      onLoadedMetadata();
-      onProgress();
-    }
-
-    progressInterval = setInterval(onProgress, 300);
-
-    return () => {
-      video.removeEventListener('progress', onProgress);
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
-      video.removeEventListener('durationchange', onLoadedMetadata);
-      video.removeEventListener('canplay', onLoadedMetadata);
-      video.removeEventListener('seeked', onSeeked);
-      video.removeEventListener('error', onError);
-      clearInterval(progressInterval);
-    };
-  }, [videoSrc3, isMeta3Loaded]);
+  useEffect(() => {
+    return attachVideoListeners(
+      2,
+      videoRef3.current,
+      videoSrc3,
+      setVideo3Duration,
+      setIsMeta3Loaded,
+      setLoadingProgress3,
+      fallback3,
+      setVideoSrc3
+    );
+  }, [videoSrc3]);
 
   // Handle Loading Completion
   useEffect(() => {
@@ -402,7 +478,7 @@ export default function App() {
     return () => {
       window.removeEventListener('resize', handleResize);
     };
-  }, [video1Duration, video2Duration, video3Duration, isCanvasTainted]);
+  }, []);
 
   // Handle Cursor Parallax on background video
   useEffect(() => {
@@ -413,19 +489,17 @@ export default function App() {
       const { clientX, clientY } = e;
       const { innerWidth, innerHeight } = window;
 
-      // Calculate normalized cursor position from -1 to 1
       const x = (clientX - innerWidth / 2) / (innerWidth / 2);
       const y = (clientY - innerHeight / 2) / (innerHeight / 2);
 
-      // Maximum offset to prevent edges showing (fits the 5% margin safely)
-      const maxOffset = 24; 
+      const maxOffset = 24;
       const moveX = x * -maxOffset;
       const moveY = y * -maxOffset;
 
       bgWrapper.style.transform = `translate3d(${moveX}px, ${moveY}px, 0)`;
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
     };
@@ -434,19 +508,12 @@ export default function App() {
   // GSAP ScrollTrigger Integration
   useEffect(() => {
     if (!containerRef.current) return;
+    if (video1Duration === 0 || video2Duration === 0 || video3Duration === 0) return;
 
-    const d1 = video1Duration || (videoRef1.current?.duration) || 0;
-    const d2 = video2Duration || (videoRef2.current?.duration) || 0;
-    const d3 = video3Duration || (videoRef3.current?.duration) || 0;
-
-    if (d1 === 0 || d2 === 0 || d3 === 0) return;
-
-    // Standard GSAP ScrollTrigger
     const trigger = ScrollTrigger.create({
       trigger: containerRef.current,
       start: 'top top',
       end: 'bottom bottom',
-      scrub: 1.2, // Smooth interpolation with scroll friction
       onUpdate: (self) => {
         targetProgressRef.current = self.progress;
       },
@@ -470,332 +537,320 @@ export default function App() {
         return;
       }
 
-      // Smooth progress lerping to ensure cinematic frame pacing
-      currentProgressRef.current += (targetProgressRef.current - currentProgressRef.current) * 0.08;
+      const diff = targetProgressRef.current - currentProgressRef.current;
+      if (Math.abs(diff) > 0.00005) {
+        currentProgressRef.current += diff * 0.1;
+      } else if (diff !== 0) {
+        currentProgressRef.current = targetProgressRef.current;
+      }
 
       const p = currentProgressRef.current;
 
-      // 1. Botanical Card (Disappears immediately, translating left and down with blur)
-      if (cardRef.current) {
-        const f_card = Math.min(1, Math.max(0, p / 0.15));
-        cardRef.current.style.opacity = (1 - f_card).toString();
-        cardRef.current.style.filter = f_card > 0.001 ? `blur(${f_card * 16}px)` : 'none';
-        cardRef.current.style.transform = `translate3d(${f_card * -35}px, ${f_card * 35}px, 0)`;
-        cardRef.current.style.pointerEvents = f_card > 0.95 ? 'none' : 'auto';
-      }
+      // Only mutate DOM overlay styles when scroll progress meaningfully changes
+      if (Math.abs(p - lastDomProgressRef.current) > 0.00005) {
+        lastDomProgressRef.current = p;
 
-      // 2. Navigation Header (Disappears with slight delay, translating upwards with blur)
-      if (navHeaderRef.current) {
-        const f_nav = Math.min(1, Math.max(0, (p - 0.03) / 0.15));
-        navHeaderRef.current.style.opacity = (1 - f_nav).toString();
-        navHeaderRef.current.style.filter = f_nav > 0.001 ? `blur(${f_nav * 14}px)` : 'none';
-        navHeaderRef.current.style.transform = `translate3d(0, ${f_nav * -35}px, 0)`;
-        navHeaderRef.current.style.pointerEvents = f_nav > 0.95 ? 'none' : 'auto';
-      }
-
-      // 3. Brand Header Logo & Text (Disappears last with most delay, translating left and upwards with blur)
-      if (brandHeaderRef.current) {
-        const f_brand = Math.min(1, Math.max(0, (p - 0.06) / 0.15));
-        brandHeaderRef.current.style.opacity = (1 - f_brand).toString();
-        brandHeaderRef.current.style.filter = f_brand > 0.001 ? `blur(${f_brand * 12}px)` : 'none';
-        brandHeaderRef.current.style.transform = `translate3d(${f_brand * -25}px, ${f_brand * -35}px, 0)`;
-        brandHeaderRef.current.style.pointerEvents = f_brand > 0.95 ? 'none' : 'auto';
-      }
-
-      // 4. Staggered Feature Cards (appear at the end of the first video, disappear into the second video)
-      if (card1Ref.current && card2Ref.current && card3Ref.current && featuresContainerRef.current) {
-        if (p > 0.13 && p < 0.55) {
-          featuresContainerRef.current.style.pointerEvents = 'auto';
-          featuresContainerRef.current.style.display = 'grid';
-        } else {
-          featuresContainerRef.current.style.pointerEvents = 'none';
-          featuresContainerRef.current.style.display = 'none';
+        // 1. Botanical Card
+        if (cardRef.current) {
+          const f_card = Math.min(1, Math.max(0, p / 0.15));
+          cardRef.current.style.opacity = (1 - f_card).toString();
+          cardRef.current.style.filter = f_card > 0.001 && f_card < 0.999 ? `blur(${f_card * 16}px)` : 'none';
+          cardRef.current.style.transform = `translate3d(${f_card * -35}px, ${f_card * 35}px, 0)`;
+          cardRef.current.style.pointerEvents = f_card > 0.95 ? 'none' : 'auto';
         }
 
-        // --- CARD 1 ANIMATION ---
-        let opacity1 = 0;
-        let blur1 = 16;
-        let tx1 = -35;
-        let ty1 = 35;
-
-        if (p >= 0.15 && p <= 0.333) {
-          // Entrance phase
-          const ratio = Math.min(1, Math.max(0, (p - 0.15) / 0.15));
-          opacity1 = ratio;
-          blur1 = (1 - ratio) * 16;
-          tx1 = (1 - ratio) * -35;
-          ty1 = (1 - ratio) * 35;
-        } else if (p > 0.333 && p <= 0.45) {
-          // Exit phase (translates left and down with blur, matches first screen transition style)
-          const ratio = Math.min(1, Math.max(0, (p - 0.333) / 0.12));
-          opacity1 = 1 - ratio;
-          blur1 = ratio * 16;
-          tx1 = ratio * -35;
-          ty1 = ratio * 35;
-        } else if (p > 0.45) {
-          opacity1 = 0;
-          blur1 = 16;
-          tx1 = -35;
-          ty1 = 35;
+        // 2. Navigation Header
+        if (navHeaderRef.current) {
+          const f_nav = Math.min(1, Math.max(0, (p - 0.03) / 0.15));
+          navHeaderRef.current.style.opacity = (1 - f_nav).toString();
+          navHeaderRef.current.style.filter = f_nav > 0.001 && f_nav < 0.999 ? `blur(${f_nav * 14}px)` : 'none';
+          navHeaderRef.current.style.transform = `translate3d(0, ${f_nav * -35}px, 0)`;
+          navHeaderRef.current.style.pointerEvents = f_nav > 0.95 ? 'none' : 'auto';
         }
 
-        card1Ref.current.style.opacity = opacity1.toString();
-        card1Ref.current.style.filter = opacity1 > 0.001 && opacity1 < 0.999 ? `blur(${blur1}px)` : 'none';
-        card1Ref.current.style.transform = `translate3d(${tx1}px, ${ty1}px, 0)`;
-
-        // --- CARD 2 ANIMATION ---
-        let opacity2 = 0;
-        let blur2 = 16;
-        let tx2 = 0;
-        let ty2 = 35;
-
-        if (p >= 0.18 && p <= 0.333) {
-          // Entrance phase
-          const ratio = Math.min(1, Math.max(0, (p - 0.18) / 0.13));
-          opacity2 = ratio;
-          blur2 = (1 - ratio) * 16;
-          tx2 = 0;
-          ty2 = (1 - ratio) * 35;
-        } else if (p > 0.333 && p <= 0.48) {
-          // Exit phase (translates straight down with blur)
-          const ratio = Math.min(1, Math.max(0, (p - 0.333) / 0.15));
-          opacity2 = 1 - ratio;
-          blur2 = ratio * 16;
-          tx2 = 0;
-          ty2 = ratio * 35;
-        } else if (p > 0.48) {
-          opacity2 = 0;
-          blur2 = 16;
-          tx2 = 0;
-          ty2 = 35;
+        // 3. Brand Header Logo & Text
+        if (brandHeaderRef.current) {
+          const f_brand = Math.min(1, Math.max(0, (p - 0.06) / 0.15));
+          brandHeaderRef.current.style.opacity = (1 - f_brand).toString();
+          brandHeaderRef.current.style.filter = f_brand > 0.001 && f_brand < 0.999 ? `blur(${f_brand * 12}px)` : 'none';
+          brandHeaderRef.current.style.transform = `translate3d(${f_brand * -25}px, ${f_brand * -35}px, 0)`;
+          brandHeaderRef.current.style.pointerEvents = f_brand > 0.95 ? 'none' : 'auto';
         }
 
-        card2Ref.current.style.opacity = opacity2.toString();
-        card2Ref.current.style.filter = opacity2 > 0.001 && opacity2 < 0.999 ? `blur(${blur2}px)` : 'none';
-        card2Ref.current.style.transform = `translate3d(${tx2}px, ${ty2}px, 0)`;
+        // 4. Staggered Feature Cards
+        if (card1Ref.current && card2Ref.current && card3Ref.current && featuresContainerRef.current) {
+          const showFeatures = p > 0.13 && p < 0.55;
+          const desiredDisplay = showFeatures ? 'grid' : 'none';
+          if (featuresContainerRef.current.style.display !== desiredDisplay) {
+            featuresContainerRef.current.style.display = desiredDisplay;
+            featuresContainerRef.current.style.pointerEvents = showFeatures ? 'auto' : 'none';
+          }
 
-        // --- CARD 3 ANIMATION ---
-        let opacity3 = 0;
-        let blur3 = 16;
-        let tx3 = 35;
-        let ty3 = 35;
+          if (showFeatures) {
+            let opacity1 = 0;
+            let blur1 = 16;
+            let tx1 = -35;
+            let ty1 = 35;
 
-        if (p >= 0.21 && p <= 0.333) {
-          // Entrance phase
-          const ratio = Math.min(1, Math.max(0, (p - 0.21) / 0.11));
-          opacity3 = ratio;
-          blur3 = (1 - ratio) * 16;
-          tx3 = (1 - ratio) * 35;
-          ty3 = (1 - ratio) * 35;
-        } else if (p > 0.333 && p <= 0.51) {
-          // Exit phase (translates right and down with blur)
-          const ratio = Math.min(1, Math.max(0, (p - 0.333) / 0.18));
-          opacity3 = 1 - ratio;
-          blur3 = ratio * 16;
-          tx3 = ratio * 35;
-          ty3 = ratio * 35;
-        } else if (p > 0.51) {
-          opacity3 = 0;
-          blur3 = 16;
-          tx3 = 35;
-          ty3 = 35;
-        }
-
-        card3Ref.current.style.opacity = opacity3.toString();
-        card3Ref.current.style.filter = opacity3 > 0.001 && opacity3 < 0.999 ? `blur(${blur3}px)` : 'none';
-        card3Ref.current.style.transform = `translate3d(${tx3}px, ${ty3}px, 0)`;
-      }
-
-      // 5. Staggered Company Mission Text (appears after feature cards vanish, during second/third videos, p >= 0.44 to 1.0)
-      if (missionContainerRef.current && missionPara1Ref.current && missionPara2Ref.current && missionPara3Ref.current) {
-        if (p > 0.44) {
-          missionContainerRef.current.style.display = 'flex';
-          missionContainerRef.current.style.pointerEvents = 'auto';
-        } else {
-          missionContainerRef.current.style.display = 'none';
-          missionContainerRef.current.style.pointerEvents = 'none';
-        }
-
-        // --- MISSION PARAGRAPH 1 ---
-        // Snappy entry (0.44 to 0.47), stable center hold (0.47 to 0.59), snappy exit (0.59 to 0.62)
-        let op1 = 0;
-        let bl1 = 20;
-        let y1 = 120;
-
-        if (p < 0.44) {
-          op1 = 0;
-          bl1 = 20;
-          y1 = 120;
-        } else if (p >= 0.44 && p < 0.47) {
-          const ratio = (p - 0.44) / 0.03;
-          op1 = ratio;
-          bl1 = (1 - ratio) * 20;
-          y1 = (1 - ratio) * 120;
-        } else if (p >= 0.47 && p <= 0.59) {
-          op1 = 1;
-          bl1 = 0;
-          y1 = 0;
-        } else if (p > 0.59 && p <= 0.62) {
-          const ratio = (p - 0.59) / 0.03;
-          op1 = 1 - ratio;
-          bl1 = ratio * 20;
-          y1 = ratio * -120;
-        } else if (p > 0.62) {
-          op1 = 0;
-          bl1 = 20;
-          y1 = -120;
-        }
-
-        missionPara1Ref.current.style.opacity = op1.toString();
-        missionPara1Ref.current.style.filter = op1 > 0.001 && op1 < 0.999 ? `blur(${bl1}px)` : 'none';
-        missionPara1Ref.current.style.transform = `translate3d(0, ${y1}px, 0)`;
-
-        // --- MISSION PARAGRAPH 2 ---
-        // Snappy entry (0.62 to 0.65), stable center hold (0.65 to 0.77), snappy exit (0.77 to 0.80)
-        let op2 = 0;
-        let bl2 = 20;
-        let y2 = 120;
-
-        if (p < 0.62) {
-          op2 = 0;
-          bl2 = 20;
-          y2 = 120;
-        } else if (p >= 0.62 && p < 0.65) {
-          const ratio = (p - 0.62) / 0.03;
-          op2 = ratio;
-          bl2 = (1 - ratio) * 20;
-          y2 = (1 - ratio) * 120;
-        } else if (p >= 0.65 && p <= 0.77) {
-          op2 = 1;
-          bl2 = 0;
-          y2 = 0;
-        } else if (p > 0.77 && p <= 0.80) {
-          const ratio = (p - 0.77) / 0.03;
-          op2 = 1 - ratio;
-          bl2 = ratio * 20;
-          y2 = ratio * -120;
-        } else if (p > 0.80) {
-          op2 = 0;
-          bl2 = 20;
-          y2 = -120;
-        }
-
-        missionPara2Ref.current.style.opacity = op2.toString();
-        missionPara2Ref.current.style.filter = op2 > 0.001 && op2 < 0.999 ? `blur(${bl2}px)` : 'none';
-        missionPara2Ref.current.style.transform = `translate3d(0, ${y2}px, 0)`;
-
-        // --- MISSION PARAGRAPH 3 ---
-        // Snappy entry (0.80 to 0.83), stable center hold (0.83 to 0.95), snappy exit (0.95 to 0.98)
-        let op3 = 0;
-        let bl3 = 20;
-        let y3 = 120;
-
-        if (p < 0.80) {
-          op3 = 0;
-          bl3 = 20;
-          y3 = 120;
-        } else if (p >= 0.80 && p < 0.83) {
-          const ratio = (p - 0.80) / 0.03;
-          op3 = ratio;
-          bl3 = (1 - ratio) * 20;
-          y3 = (1 - ratio) * 120;
-        } else if (p >= 0.83 && p <= 0.95) {
-          op3 = 1;
-          bl3 = 0;
-          y3 = 0;
-        } else if (p > 0.95 && p <= 0.98) {
-          const ratio = (p - 0.95) / 0.03;
-          op3 = 1 - ratio;
-          bl3 = ratio * 20;
-          y3 = ratio * -120;
-        } else if (p > 0.98) {
-          op3 = 0;
-          bl3 = 20;
-          y3 = -120;
-        }
-
-        missionPara3Ref.current.style.opacity = op3.toString();
-        missionPara3Ref.current.style.filter = op3 > 0.001 && op3 < 0.999 ? `blur(${bl3}px)` : 'none';
-        missionPara3Ref.current.style.transform = `translate3d(0, ${y3}px, 0)`;
-
-        // --- FEEDBACK FORM OVERLAY ---
-        // Appears at the very final stage of the scroll (p >= 0.93 to 1.0)
-        if (feedbackContainerRef.current && feedbackFormRef.current) {
-          if (p > 0.93) {
-            feedbackContainerRef.current.style.display = 'flex';
-            feedbackContainerRef.current.style.pointerEvents = 'auto';
-
-            let opForm = 0;
-            let blForm = 20;
-            let yForm = 120;
-
-            if (p < 0.94) {
-              opForm = 0;
-              blForm = 20;
-              yForm = 120;
-            } else if (p >= 0.94 && p < 0.97) {
-              const ratio = (p - 0.94) / 0.03;
-              opForm = ratio;
-              blForm = (1 - ratio) * 20;
-              yForm = (1 - ratio) * 120;
-            } else {
-              opForm = 1;
-              blForm = 0;
-              yForm = 0;
+            if (p >= 0.15 && p <= 0.333) {
+              const ratio = Math.min(1, Math.max(0, (p - 0.15) / 0.15));
+              opacity1 = ratio;
+              blur1 = (1 - ratio) * 16;
+              tx1 = (1 - ratio) * -35;
+              ty1 = (1 - ratio) * 35;
+            } else if (p > 0.333 && p <= 0.45) {
+              const ratio = Math.min(1, Math.max(0, (p - 0.333) / 0.12));
+              opacity1 = 1 - ratio;
+              blur1 = ratio * 16;
+              tx1 = ratio * -35;
+              ty1 = ratio * 35;
+            } else if (p > 0.45) {
+              opacity1 = 0;
+              blur1 = 16;
+              tx1 = -35;
+              ty1 = 35;
             }
 
-            feedbackFormRef.current.style.opacity = opForm.toString();
-            feedbackFormRef.current.style.filter = opForm > 0.001 && opForm < 0.999 ? `blur(${blForm}px)` : 'none';
-            feedbackFormRef.current.style.transform = `translate3d(0, ${yForm}px, 0)`;
-          } else {
-            feedbackContainerRef.current.style.display = 'none';
-            feedbackContainerRef.current.style.pointerEvents = 'none';
+            card1Ref.current.style.opacity = opacity1.toString();
+            card1Ref.current.style.filter = opacity1 > 0.001 && opacity1 < 0.999 ? `blur(${blur1}px)` : 'none';
+            card1Ref.current.style.transform = `translate3d(${tx1}px, ${ty1}px, 0)`;
+
+            let opacity2 = 0;
+            let blur2 = 16;
+            const tx2 = 0;
+            let ty2 = 35;
+
+            if (p >= 0.18 && p <= 0.333) {
+              const ratio = Math.min(1, Math.max(0, (p - 0.18) / 0.13));
+              opacity2 = ratio;
+              blur2 = (1 - ratio) * 16;
+              ty2 = (1 - ratio) * 35;
+            } else if (p > 0.333 && p <= 0.48) {
+              const ratio = Math.min(1, Math.max(0, (p - 0.333) / 0.15));
+              opacity2 = 1 - ratio;
+              blur2 = ratio * 16;
+              ty2 = ratio * 35;
+            } else if (p > 0.48) {
+              opacity2 = 0;
+              blur2 = 16;
+              ty2 = 35;
+            }
+
+            card2Ref.current.style.opacity = opacity2.toString();
+            card2Ref.current.style.filter = opacity2 > 0.001 && opacity2 < 0.999 ? `blur(${blur2}px)` : 'none';
+            card2Ref.current.style.transform = `translate3d(${tx2}px, ${ty2}px, 0)`;
+
+            let opacity3 = 0;
+            let blur3 = 16;
+            let tx3 = 35;
+            let ty3 = 35;
+
+            if (p >= 0.21 && p <= 0.333) {
+              const ratio = Math.min(1, Math.max(0, (p - 0.21) / 0.11));
+              opacity3 = ratio;
+              blur3 = (1 - ratio) * 16;
+              tx3 = (1 - ratio) * 35;
+              ty3 = (1 - ratio) * 35;
+            } else if (p > 0.333 && p <= 0.51) {
+              const ratio = Math.min(1, Math.max(0, (p - 0.333) / 0.18));
+              opacity3 = 1 - ratio;
+              blur3 = ratio * 16;
+              tx3 = ratio * 35;
+              ty3 = ratio * 35;
+            } else if (p > 0.51) {
+              opacity3 = 0;
+              blur3 = 16;
+              tx3 = 35;
+              ty3 = 35;
+            }
+
+            card3Ref.current.style.opacity = opacity3.toString();
+            card3Ref.current.style.filter = opacity3 > 0.001 && opacity3 < 0.999 ? `blur(${blur3}px)` : 'none';
+            card3Ref.current.style.transform = `translate3d(${tx3}px, ${ty3}px, 0)`;
+          }
+        }
+
+        // 5. Staggered Company Mission Text
+        if (missionContainerRef.current && missionPara1Ref.current && missionPara2Ref.current && missionPara3Ref.current) {
+          const showMission = p > 0.44;
+          const desiredMissionDisplay = showMission ? 'flex' : 'none';
+          if (missionContainerRef.current.style.display !== desiredMissionDisplay) {
+            missionContainerRef.current.style.display = desiredMissionDisplay;
+            missionContainerRef.current.style.pointerEvents = showMission ? 'auto' : 'none';
+          }
+
+          if (showMission) {
+            let op1 = 0;
+            let bl1 = 20;
+            let y1 = 120;
+
+            if (p < 0.44) {
+              op1 = 0;
+              bl1 = 20;
+              y1 = 120;
+            } else if (p >= 0.44 && p < 0.47) {
+              const ratio = (p - 0.44) / 0.03;
+              op1 = ratio;
+              bl1 = (1 - ratio) * 20;
+              y1 = (1 - ratio) * 120;
+            } else if (p >= 0.47 && p <= 0.59) {
+              op1 = 1;
+              bl1 = 0;
+              y1 = 0;
+            } else if (p > 0.59 && p <= 0.62) {
+              const ratio = (p - 0.59) / 0.03;
+              op1 = 1 - ratio;
+              bl1 = ratio * 20;
+              y1 = ratio * -120;
+            } else {
+              op1 = 0;
+              bl1 = 20;
+              y1 = -120;
+            }
+
+            missionPara1Ref.current.style.opacity = op1.toString();
+            missionPara1Ref.current.style.filter = op1 > 0.001 && op1 < 0.999 ? `blur(${bl1}px)` : 'none';
+            missionPara1Ref.current.style.transform = `translate3d(0, ${y1}px, 0)`;
+
+            let op2 = 0;
+            let bl2 = 20;
+            let y2 = 120;
+
+            if (p < 0.62) {
+              op2 = 0;
+              bl2 = 20;
+              y2 = 120;
+            } else if (p >= 0.62 && p < 0.65) {
+              const ratio = (p - 0.62) / 0.03;
+              op2 = ratio;
+              bl2 = (1 - ratio) * 20;
+              y2 = (1 - ratio) * 120;
+            } else if (p >= 0.65 && p <= 0.77) {
+              op2 = 1;
+              bl2 = 0;
+              y2 = 0;
+            } else if (p > 0.77 && p <= 0.80) {
+              const ratio = (p - 0.77) / 0.03;
+              op2 = 1 - ratio;
+              bl2 = ratio * 20;
+              y2 = ratio * -120;
+            } else {
+              op2 = 0;
+              bl2 = 20;
+              y2 = -120;
+            }
+
+            missionPara2Ref.current.style.opacity = op2.toString();
+            missionPara2Ref.current.style.filter = op2 > 0.001 && op2 < 0.999 ? `blur(${bl2}px)` : 'none';
+            missionPara2Ref.current.style.transform = `translate3d(0, ${y2}px, 0)`;
+
+            let op3 = 0;
+            let bl3 = 20;
+            let y3 = 120;
+
+            if (p < 0.80) {
+              op3 = 0;
+              bl3 = 20;
+              y3 = 120;
+            } else if (p >= 0.80 && p < 0.83) {
+              const ratio = (p - 0.80) / 0.03;
+              op3 = ratio;
+              bl3 = (1 - ratio) * 20;
+              y3 = (1 - ratio) * 120;
+            } else if (p >= 0.83 && p <= 0.95) {
+              op3 = 1;
+              bl3 = 0;
+              y3 = 0;
+            } else if (p > 0.95 && p <= 0.98) {
+              const ratio = (p - 0.95) / 0.03;
+              op3 = 1 - ratio;
+              bl3 = ratio * 20;
+              y3 = ratio * -120;
+            } else {
+              op3 = 0;
+              bl3 = 20;
+              y3 = -120;
+            }
+
+            missionPara3Ref.current.style.opacity = op3.toString();
+            missionPara3Ref.current.style.filter = op3 > 0.001 && op3 < 0.999 ? `blur(${bl3}px)` : 'none';
+            missionPara3Ref.current.style.transform = `translate3d(0, ${y3}px, 0)`;
+
+            // Feedback Form Overlay
+            if (feedbackContainerRef.current && feedbackFormRef.current) {
+              const showFeedback = p > 0.93;
+              const desiredFeedbackDisplay = showFeedback ? 'flex' : 'none';
+              if (feedbackContainerRef.current.style.display !== desiredFeedbackDisplay) {
+                feedbackContainerRef.current.style.display = desiredFeedbackDisplay;
+                feedbackContainerRef.current.style.pointerEvents = showFeedback ? 'auto' : 'none';
+              }
+
+              if (showFeedback) {
+                let opForm = 0;
+                let blForm = 20;
+                let yForm = 120;
+
+                if (p < 0.94) {
+                  opForm = 0;
+                  blForm = 20;
+                  yForm = 120;
+                } else if (p >= 0.94 && p < 0.97) {
+                  const ratio = (p - 0.94) / 0.03;
+                  opForm = ratio;
+                  blForm = (1 - ratio) * 20;
+                  yForm = (1 - ratio) * 120;
+                } else {
+                  opForm = 1;
+                  blForm = 0;
+                  yForm = 0;
+                }
+
+                feedbackFormRef.current.style.opacity = opForm.toString();
+                feedbackFormRef.current.style.filter = opForm > 0.001 && opForm < 0.999 ? `blur(${blForm}px)` : 'none';
+                feedbackFormRef.current.style.transform = `translate3d(0, ${yForm}px, 0)`;
+              }
+            }
           }
         }
       }
 
-      // Triple video range calculations
-      const p1 = Math.max(0, Math.min(1, p * 3));
-      const p2 = Math.max(0, Math.min(1, (p - 0.333) * 3));
-      const p3 = Math.max(0, Math.min(1, (p - 0.666) * 3));
+      // Compute active video index and clamped target timestamp
+      const [d1State, d2State, d3State] = durationsRef.current;
+      const dur1 = d1State > 0 ? d1State : (v1.duration && !isNaN(v1.duration) && v1.duration > 0 ? v1.duration : 10);
+      const dur2 = d2State > 0 ? d2State : (v2.duration && !isNaN(v2.duration) && v2.duration > 0 ? v2.duration : 10);
+      const dur3 = d3State > 0 ? d3State : (v3.duration && !isNaN(v3.duration) && v3.duration > 0 ? v3.duration : 10);
 
-      const dur1 = video1Duration && !isNaN(video1Duration) && video1Duration > 0 ? video1Duration : (v1.duration && !isNaN(v1.duration) && v1.duration > 0 ? v1.duration : 10);
-      const dur2 = video2Duration && !isNaN(video2Duration) && video2Duration > 0 ? video2Duration : (v2.duration && !isNaN(v2.duration) && v2.duration > 0 ? v2.duration : 10);
-      const dur3 = video3Duration && !isNaN(video3Duration) && video3Duration > 0 ? video3Duration : (v3.duration && !isNaN(v3.duration) && v3.duration > 0 ? v3.duration : 10);
+      let activeIdx = 0;
+      let activeProgress = 0;
+      let activeDur = dur1;
 
-      const targetTime1 = p1 * dur1;
-      const targetTime2 = p2 * dur2;
-      const targetTime3 = p3 * dur3;
-
-      // Update Video 1 currentTime strictly when not seeking
-      if (!v1.seeking && Math.abs(v1.currentTime - targetTime1) > 0.005) {
-        v1.currentTime = Math.max(0, Math.min(targetTime1, dur1 - 0.01));
+      if (p <= 0.333) {
+        activeIdx = 0;
+        activeProgress = Math.max(0, Math.min(1, p * 3));
+        activeDur = dur1;
+      } else if (p <= 0.666) {
+        activeIdx = 1;
+        activeProgress = Math.max(0, Math.min(1, (p - 0.333) * 3));
+        activeDur = dur2;
+      } else {
+        activeIdx = 2;
+        activeProgress = Math.max(0, Math.min(1, (p - 0.666) * 3));
+        activeDur = dur3;
       }
 
-      // Update Video 2 currentTime strictly when not seeking
-      if (!v2.seeking && Math.abs(v2.currentTime - targetTime2) > 0.005) {
-        v2.currentTime = Math.max(0, Math.min(targetTime2, dur2 - 0.01));
+      const clampedTime = Math.max(0, Math.min(activeProgress * activeDur, activeDur - 0.01));
+
+      seekGateRef.current.targetIndex = activeIdx;
+      seekGateRef.current.targetTime = clampedTime;
+
+      if (isCanvasTaintedRef.current) {
+        v1.style.opacity = activeIdx === 0 ? '1' : '0';
+        v2.style.opacity = activeIdx === 1 ? '1' : '0';
+        v3.style.opacity = activeIdx === 2 ? '1' : '0';
       }
 
-      // Update Video 3 currentTime strictly when not seeking
-      if (!v3.seeking && Math.abs(v3.currentTime - targetTime3) > 0.005) {
-        v3.currentTime = Math.max(0, Math.min(targetTime3, dur3 - 0.01));
-      }
-
-      // Render updated frames on Canvas ONLY when fully decoded and finished seeking
-      const activeVideo = p <= 0.333 ? v1 : p <= 0.666 ? v2 : v3;
-      const lastTimeKey = p <= 0.333
-        ? `v1_${v1.currentTime}`
-        : p <= 0.666
-          ? `v2_${v2.currentTime}`
-          : `v3_${v3.currentTime}`;
-
-      if (activeVideo.readyState >= 2 && !activeVideo.seeking && lastTimeRef.current !== lastTimeKey) {
-        if (!isCanvasTainted) {
-          drawFrame();
-        }
-        lastTimeRef.current = lastTimeKey;
-      }
+      // Request next video frame ONLY if previous seeked frame has finished loading & rendering
+      requestNextFrameIfIdle();
 
       rAF = requestAnimationFrame(tick);
     };
@@ -803,8 +858,12 @@ export default function App() {
     rAF = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(rAF);
+      if (seekGateRef.current.watchdogId !== null) {
+        window.clearTimeout(seekGateRef.current.watchdogId);
+        seekGateRef.current.watchdogId = null;
+      }
     };
-  }, [video1Duration, video2Duration, video3Duration, isCanvasTainted]);
+  }, []);
 
   return (
     <div id="scroll-wrapper" ref={containerRef} className="relative w-full h-[500vh] bg-black">
@@ -1057,20 +1116,18 @@ export default function App() {
             transition: 'transform 0.4s cubic-bezier(0.15, 0.85, 0.35, 1)'
           }}
         >
-          {/* Triple video sources for seamless chronological scrubbing */}
+          {/* Triple video sources kept mounted (without display:none) so hardware decoder stays warm */}
           <video
             id="scroll-video-source-1"
             ref={videoRef1}
-            src={videoSrc1}
+            src={videoSrc1 || undefined}
             preload="auto"
             muted
             playsInline
-            className={`absolute pointer-events-none w-full h-full object-cover transition-opacity duration-300 ${
-              isCanvasTainted && currentProgressRef.current <= 0.333 
-                ? 'opacity-100 block' 
-                : isCanvasTainted 
-                  ? 'opacity-0 hidden'
-                  : 'opacity-0 w-0 h-0 hidden'
+            className={`absolute inset-0 pointer-events-none w-full h-full object-cover transition-opacity duration-300 ${
+              isCanvasTainted && currentProgressRef.current <= 0.333
+                ? 'opacity-100 z-10'
+                : 'opacity-0 z-0'
             }`}
             crossOrigin="anonymous"
           />
@@ -1078,16 +1135,14 @@ export default function App() {
           <video
             id="scroll-video-source-2"
             ref={videoRef2}
-            src={videoSrc2}
+            src={videoSrc2 || undefined}
             preload="auto"
             muted
             playsInline
-            className={`absolute pointer-events-none w-full h-full object-cover transition-opacity duration-300 ${
+            className={`absolute inset-0 pointer-events-none w-full h-full object-cover transition-opacity duration-300 ${
               isCanvasTainted && currentProgressRef.current > 0.333 && currentProgressRef.current <= 0.666
-                ? 'opacity-100 block' 
-                : isCanvasTainted 
-                  ? 'opacity-0 hidden'
-                  : 'opacity-0 w-0 h-0 hidden'
+                ? 'opacity-100 z-10'
+                : 'opacity-0 z-0'
             }`}
             crossOrigin="anonymous"
           />
@@ -1095,16 +1150,14 @@ export default function App() {
           <video
             id="scroll-video-source-3"
             ref={videoRef3}
-            src={videoSrc3}
+            src={videoSrc3 || undefined}
             preload="auto"
             muted
             playsInline
-            className={`absolute pointer-events-none w-full h-full object-cover transition-opacity duration-300 ${
-              isCanvasTainted && currentProgressRef.current > 0.666 
-                ? 'opacity-100 block' 
-                : isCanvasTainted 
-                  ? 'opacity-0 hidden'
-                  : 'opacity-0 w-0 h-0 hidden'
+            className={`absolute inset-0 pointer-events-none w-full h-full object-cover transition-opacity duration-300 ${
+              isCanvasTainted && currentProgressRef.current > 0.666
+                ? 'opacity-100 z-10'
+                : 'opacity-0 z-0'
             }`}
             crossOrigin="anonymous"
           />
@@ -1114,7 +1167,7 @@ export default function App() {
             <canvas
               id="render-canvas"
               ref={canvasRef}
-              className="w-full h-full object-cover select-none pointer-events-none block"
+              className="relative z-10 w-full h-full object-cover select-none pointer-events-none block"
             />
           )}
         </div>
